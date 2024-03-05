@@ -76,6 +76,10 @@ func (co *Coroutine) Resume(f func(), notifyOut chan error) error {
 	return <-notifyOut
 }
 
+func (co *Coroutine) Yield() {
+
+}
+
 type CoPool struct {
 	stack []*Coroutine
 	size  int

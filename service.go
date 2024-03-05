@@ -34,20 +34,24 @@ func (s *BaseService) Quit() {
 	close(s.quit)
 }
 
+const NilGoSeq uint64 = 0
+
 type GoService struct {
 	BaseService
-	goSeq uint64
+	allocSeq uint64
+	runSeq   uint64
+	flag     *int
 }
 
 func (s *GoService) Await(call func()) {
-	curSeq := atomic.LoadUint64(&s.goSeq)
+	curSeq := atomic.LoadUint64(&s.runSeq)
 	s.suspend <- nil
 	call()
 	//TODO: use sync.Pool??
 	c := make(chan struct{})
 	s.queue <- &QueueMsg{
 		wakeup: func() {
-			atomic.StoreUint64(&s.goSeq, curSeq)
+			atomic.StoreUint64(&s.runSeq, curSeq)
 			c <- struct{}{}
 		},
 	}
@@ -64,6 +68,7 @@ func (s *GoService) Run() {
 				go s.handleMsg(msg.call)
 			}
 			<-s.suspend
+			atomic.StoreUint64(&s.runSeq, NilGoSeq)
 		case <-s.quit:
 			break
 		}
@@ -78,6 +83,7 @@ func (s *GoService) Run() {
 				go s.handleMsg(msg.call)
 			}
 			<-s.suspend
+			atomic.StoreUint64(&s.runSeq, NilGoSeq)
 		default:
 			return
 		}
@@ -85,11 +91,16 @@ func (s *GoService) Run() {
 }
 
 func (s *GoService) handleMsg(call func()) {
-	curSeq := atomic.AddUint64(&s.goSeq, 1)
+	curSeq := atomic.AddUint64(&s.allocSeq, 1)
+	if curSeq == NilGoSeq {
+		curSeq = atomic.AddUint64(&s.allocSeq, 1)
+	}
+	atomic.StoreUint64(&s.runSeq, curSeq)
+	s.flag = new(int)
 	defer func() {
 		if e := recover(); e != nil {
 			log.Printf("go running err, %v\n", e)
-			if curSeq != atomic.LoadUint64(&s.goSeq) {
+			if curSeq == atomic.LoadUint64(&s.runSeq) {
 				s.suspend <- fmt.Errorf("%v", e)
 			}
 		} else {
@@ -165,15 +176,14 @@ func (s *CoService) Run() {
 
 func NewService(qsize, psize int) (s Service) {
 	if psize > 0 {
-		cs := &CoService{
+		s = &CoService{
 			BaseService: BaseService{
 				queue:   make(chan *QueueMsg, qsize),
 				suspend: make(chan error, 1),
 				quit:    make(chan struct{}),
 			},
+			pool: NewCoPool(psize),
 		}
-		cs.pool = NewCoPool(psize)
-		s = cs
 	} else {
 		s = &GoService{
 			BaseService: BaseService{
