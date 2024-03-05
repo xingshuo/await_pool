@@ -35,7 +35,9 @@ type Coroutine struct {
 	state  CoState
 }
 
-func (co *Coroutine) Resume(f func(), notifyOut chan error) error {
+// 1. 将f传入co.runner中并运行，直到f执行完或挂起
+// 2. 唤醒co.runner中上次挂起的f，入参一般传nil
+func (co *Coroutine) Resume(f func()) error {
 	if co.state == Dead {
 		return errors.New("cannot resume dead coroutine")
 	}
@@ -49,14 +51,14 @@ func (co *Coroutine) Resume(f func(), notifyOut chan error) error {
 				if e := recover(); e != nil {
 					log.Printf("co running err, %v\n", e)
 					if co.state == Running {
-						notifyOut <- fmt.Errorf("%v", e)
+						co.pool.notifyOut <- fmt.Errorf("%v", e)
 					}
 				}
 				co.state = Dead
 			}()
 
 			f()
-			notifyOut <- nil
+			co.pool.notifyOut <- nil
 			for {
 				f = nil
 				co.state = Suspended
@@ -65,7 +67,7 @@ func (co *Coroutine) Resume(f func(), notifyOut chan error) error {
 				}
 				f = <-co.waitIn
 				f()
-				notifyOut <- nil
+				co.pool.notifyOut <- nil
 			}
 		}
 		go co.runner()
@@ -73,18 +75,24 @@ func (co *Coroutine) Resume(f func(), notifyOut chan error) error {
 		co.waitIn <- f
 	}
 
-	return <-notifyOut
+	return <-co.pool.notifyOut
 }
 
-func (co *Coroutine) Yield() {
-
+// 将当前co设为挂起状态，唤醒外部Resume调用处，并执行f，完成后挂起，等待外部再次Resume才能唤醒
+// Notice: f中不应该再次Yield
+func (co *Coroutine) Yield(f func()) {
+	co.state = Suspended
+	co.pool.notifyOut <- nil
+	f()
+	<-co.waitIn
 }
 
 type CoPool struct {
-	stack []*Coroutine
-	size  int
-	cap   int
-	mu    sync.RWMutex
+	stack     []*Coroutine
+	size      int
+	cap       int
+	mu        sync.RWMutex
+	notifyOut chan error
 }
 
 func (p *CoPool) Get() (co *Coroutine) {
@@ -118,9 +126,10 @@ func (p *CoPool) Put(co *Coroutine) bool {
 
 func NewCoPool(cap int) *CoPool {
 	p := &CoPool{
-		cap:   cap,
-		stack: make([]*Coroutine, cap),
-		size:  0,
+		cap:       cap,
+		stack:     make([]*Coroutine, cap),
+		size:      0,
+		notifyOut: make(chan error, 1),
 	}
 	return p
 }

@@ -19,7 +19,6 @@ type Service interface {
 
 type BaseService struct {
 	queue    chan *QueueMsg
-	suspend  chan error
 	quit     chan struct{}
 	quitFlag bool
 }
@@ -38,7 +37,8 @@ type GoCtx struct {
 }
 type GoService struct {
 	BaseService
-	runCtx *GoCtx
+	runCtx  *GoCtx
+	suspend chan error
 }
 
 func (s *GoService) Await(call func()) {
@@ -68,6 +68,7 @@ func (s *GoService) Run() {
 				go s.handleMsg(msg.call)
 			}
 			<-s.suspend
+			s.runCtx = nil
 		case <-s.quit:
 			break
 		}
@@ -82,6 +83,7 @@ func (s *GoService) Run() {
 				go s.handleMsg(msg.call)
 			}
 			<-s.suspend
+			s.runCtx = nil
 		default:
 			return
 		}
@@ -89,7 +91,9 @@ func (s *GoService) Run() {
 }
 
 func (s *GoService) handleMsg(call func()) {
-	s.runCtx = new(GoCtx)
+	s.runCtx = &GoCtx{
+		Running: true,
+	}
 	ctx := s.runCtx
 	defer func() {
 		if e := recover(); e != nil {
@@ -112,20 +116,19 @@ type CoService struct {
 
 func (s *CoService) Await(call func()) {
 	co := s.runCo
-	s.suspend <- nil
-	co.state = Suspended
-	call()
-	s.queue <- &QueueMsg{
-		wakeup: func() {
-			s.runCo = co
-			err := co.Resume(nil, s.suspend)
-			s.runCo = nil
-			if err != nil {
-				log.Printf("handle msg call err, %v\n", err)
-			}
-		},
-	}
-	<-co.waitIn
+	co.Yield(func() {
+		call()
+		s.queue <- &QueueMsg{
+			wakeup: func() {
+				s.runCo = co
+				err := co.Resume(nil)
+				s.runCo = nil
+				if err != nil {
+					log.Printf("handle msg call err, %v\n", err)
+				}
+			},
+		}
+	})
 }
 
 func (s *CoService) Run() {
@@ -137,7 +140,7 @@ func (s *CoService) Run() {
 			} else {
 				co := s.pool.Get()
 				s.runCo = co
-				err := co.Resume(msg.call, s.suspend)
+				err := co.Resume(msg.call)
 				s.runCo = nil
 				if err != nil {
 					log.Printf("handle msg call err, %v\n", err)
@@ -156,7 +159,7 @@ func (s *CoService) Run() {
 			} else {
 				co := s.pool.Get()
 				s.runCo = co
-				err := co.Resume(msg.call, s.suspend)
+				err := co.Resume(msg.call)
 				s.runCo = nil
 				if err != nil {
 					log.Printf("handle msg call err, %v\n", err)
@@ -172,19 +175,18 @@ func NewService(qsize, psize int) (s Service) {
 	if psize > 0 {
 		s = &CoService{
 			BaseService: BaseService{
-				queue:   make(chan *QueueMsg, qsize),
-				suspend: make(chan error, 1),
-				quit:    make(chan struct{}),
+				queue: make(chan *QueueMsg, qsize),
+				quit:  make(chan struct{}),
 			},
 			pool: NewCoPool(psize),
 		}
 	} else {
 		s = &GoService{
 			BaseService: BaseService{
-				queue:   make(chan *QueueMsg, qsize),
-				suspend: make(chan error, 1),
-				quit:    make(chan struct{}),
+				queue: make(chan *QueueMsg, qsize),
+				quit:  make(chan struct{}),
 			},
+			suspend: make(chan error, 1),
 		}
 	}
 	return
