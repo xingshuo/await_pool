@@ -110,21 +110,18 @@ func (s *GoService) handleMsg(call func()) {
 
 type CoService struct {
 	BaseService
-	pool  *CoPool
-	runCo *Coroutine
+	coPool *CoPool
 }
 
 func (s *CoService) Await(call func()) {
-	co := s.runCo
+	co := s.coPool.RunningCo()
 	co.Yield(func() {
 		call()
 		s.queue <- &QueueMsg{
 			wakeup: func() {
-				s.runCo = co
-				err := co.Resume(nil)
-				s.runCo = nil
+				err := co.Resume()
 				if err != nil {
-					log.Printf("handle msg call err, %v\n", err)
+					log.Printf("resume msg call err, %v\n", err)
 				}
 			},
 		}
@@ -138,12 +135,9 @@ func (s *CoService) Run() {
 			if msg.wakeup != nil {
 				msg.wakeup()
 			} else {
-				co := s.pool.Get()
-				s.runCo = co
-				err := co.Resume(msg.call)
-				s.runCo = nil
+				err := s.coPool.Run(msg.call)
 				if err != nil {
-					log.Printf("handle msg call err, %v\n", err)
+					log.Printf("run msg call err, %v\n", err)
 				}
 			}
 		case <-s.quit:
@@ -157,10 +151,7 @@ func (s *CoService) Run() {
 			if msg.wakeup != nil {
 				msg.wakeup()
 			} else {
-				co := s.pool.Get()
-				s.runCo = co
-				err := co.Resume(msg.call)
-				s.runCo = nil
+				err := s.coPool.Run(msg.call)
 				if err != nil {
 					log.Printf("handle msg call err, %v\n", err)
 				}
@@ -178,7 +169,7 @@ func NewService(qsize, psize int) (s Service) {
 				queue: make(chan *QueueMsg, qsize),
 				quit:  make(chan struct{}),
 			},
-			pool: NewCoPool(psize),
+			coPool: NewPool(psize),
 		}
 	} else {
 		s = &GoService{

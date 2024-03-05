@@ -35,9 +35,13 @@ type Coroutine struct {
 	state  CoState
 }
 
-// 1. 将f传入co.runner中并运行，直到f执行完或挂起
-// 2. 唤醒co.runner中上次挂起的f，入参一般传nil
-func (co *Coroutine) Resume(f func()) error {
+// 1. 默认参数nil，唤醒co.runner中上次挂起的f
+// 2. 将f传入co.runner中并运行，直到f执行完或挂起
+func (co *Coroutine) run(f func()) error {
+	co.pool.runCo = co
+	defer func() {
+		co.pool.runCo = nil
+	}()
 	if co.state == Dead {
 		return errors.New("cannot resume dead coroutine")
 	}
@@ -58,15 +62,16 @@ func (co *Coroutine) Resume(f func()) error {
 			}()
 
 			f()
+			co.state = Suspended
 			co.pool.notifyOut <- nil
 			for {
 				f = nil
-				co.state = Suspended
-				if !co.pool.Put(co) {
+				if !co.pool.put(co) {
 					return
 				}
 				f = <-co.waitIn
 				f()
+				co.state = Suspended
 				co.pool.notifyOut <- nil
 			}
 		}
@@ -78,9 +83,17 @@ func (co *Coroutine) Resume(f func()) error {
 	return <-co.pool.notifyOut
 }
 
+// 唤醒co.runner中上次挂起的f
+func (co *Coroutine) Resume() error {
+	return co.run(nil)
+}
+
 // 将当前co设为挂起状态，唤醒外部Resume调用处，并执行f，完成后挂起，等待外部再次Resume才能唤醒
-// Notice: f中不应该再次Yield
+// Notice: f中不应该再次调用Yield，会触发panic
 func (co *Coroutine) Yield(f func()) {
+	if co.state != Running {
+		panic("cannot yield Suspended coroutine")
+	}
 	co.state = Suspended
 	co.pool.notifyOut <- nil
 	f()
@@ -93,9 +106,10 @@ type CoPool struct {
 	cap       int
 	mu        sync.RWMutex
 	notifyOut chan error
+	runCo     *Coroutine
 }
 
-func (p *CoPool) Get() (co *Coroutine) {
+func (p *CoPool) get() (co *Coroutine) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.size > 0 {
@@ -113,7 +127,7 @@ func (p *CoPool) Get() (co *Coroutine) {
 	return
 }
 
-func (p *CoPool) Put(co *Coroutine) bool {
+func (p *CoPool) put(co *Coroutine) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.size >= p.cap {
@@ -124,7 +138,16 @@ func (p *CoPool) Put(co *Coroutine) bool {
 	return true
 }
 
-func NewCoPool(cap int) *CoPool {
+func (p *CoPool) RunningCo() *Coroutine {
+	return p.runCo
+}
+
+func (p *CoPool) Run(f func()) error {
+	co := p.get()
+	return co.run(f)
+}
+
+func NewPool(cap int) *CoPool {
 	p := &CoPool{
 		cap:       cap,
 		stack:     make([]*Coroutine, cap),
