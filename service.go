@@ -33,17 +33,17 @@ func (s *BaseService) Quit() {
 	close(s.quit)
 }
 
-type MsgCtx struct {
-	ReceivedSignal bool
+type GoCtx struct {
+	Running bool
 }
 type GoService struct {
 	BaseService
-	currentCtx *MsgCtx
+	runCtx *GoCtx
 }
 
 func (s *GoService) Await(call func()) {
-	s.currentCtx.ReceivedSignal = true
-	ctx := s.currentCtx
+	s.runCtx.Running = false
+	ctx := s.runCtx
 	s.suspend <- nil
 	call()
 	//TODO: use sync.Pool??
@@ -54,8 +54,8 @@ func (s *GoService) Await(call func()) {
 		},
 	}
 	<-c
-	ctx.ReceivedSignal = false
-	s.currentCtx = ctx
+	ctx.Running = true
+	s.runCtx = ctx
 }
 
 func (s *GoService) Run() {
@@ -89,12 +89,12 @@ func (s *GoService) Run() {
 }
 
 func (s *GoService) handleMsg(call func()) {
-	s.currentCtx = new(MsgCtx)
-	ctx := s.currentCtx
+	s.runCtx = new(GoCtx)
+	ctx := s.runCtx
 	defer func() {
 		if e := recover(); e != nil {
 			log.Printf("go running err, %v\n", e)
-			if !ctx.ReceivedSignal {
+			if ctx.Running {
 				s.suspend <- fmt.Errorf("%v", e)
 			}
 		} else {
