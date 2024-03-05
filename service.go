@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"log"
-	"sync/atomic"
 )
 
 type QueueMsg struct {
@@ -34,28 +33,29 @@ func (s *BaseService) Quit() {
 	close(s.quit)
 }
 
-const NilGoSeq uint64 = 0
-
+type MsgCtx struct {
+	ReceivedSignal bool
+}
 type GoService struct {
 	BaseService
-	allocSeq uint64
-	runSeq   uint64
-	flag     *int
+	currentCtx *MsgCtx
 }
 
 func (s *GoService) Await(call func()) {
-	curSeq := atomic.LoadUint64(&s.runSeq)
+	s.currentCtx.ReceivedSignal = true
+	ctx := s.currentCtx
 	s.suspend <- nil
 	call()
 	//TODO: use sync.Pool??
 	c := make(chan struct{})
 	s.queue <- &QueueMsg{
 		wakeup: func() {
-			atomic.StoreUint64(&s.runSeq, curSeq)
 			c <- struct{}{}
 		},
 	}
 	<-c
+	ctx.ReceivedSignal = false
+	s.currentCtx = ctx
 }
 
 func (s *GoService) Run() {
@@ -68,7 +68,6 @@ func (s *GoService) Run() {
 				go s.handleMsg(msg.call)
 			}
 			<-s.suspend
-			atomic.StoreUint64(&s.runSeq, NilGoSeq)
 		case <-s.quit:
 			break
 		}
@@ -83,7 +82,6 @@ func (s *GoService) Run() {
 				go s.handleMsg(msg.call)
 			}
 			<-s.suspend
-			atomic.StoreUint64(&s.runSeq, NilGoSeq)
 		default:
 			return
 		}
@@ -91,16 +89,12 @@ func (s *GoService) Run() {
 }
 
 func (s *GoService) handleMsg(call func()) {
-	curSeq := atomic.AddUint64(&s.allocSeq, 1)
-	if curSeq == NilGoSeq {
-		curSeq = atomic.AddUint64(&s.allocSeq, 1)
-	}
-	atomic.StoreUint64(&s.runSeq, curSeq)
-	s.flag = new(int)
+	s.currentCtx = new(MsgCtx)
+	ctx := s.currentCtx
 	defer func() {
 		if e := recover(); e != nil {
 			log.Printf("go running err, %v\n", e)
-			if curSeq == atomic.LoadUint64(&s.runSeq) {
+			if !ctx.ReceivedSignal {
 				s.suspend <- fmt.Errorf("%v", e)
 			}
 		} else {
