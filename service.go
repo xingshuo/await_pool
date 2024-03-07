@@ -15,6 +15,7 @@ type Service interface {
 	Run()
 	Await(func())
 	Quit()
+	Stat()
 }
 
 type BaseService struct {
@@ -31,6 +32,8 @@ func (s *BaseService) Quit() {
 	s.quitFlag = true
 	close(s.quit)
 }
+
+func (s *BaseService) Stat() {}
 
 type GoCtx struct {
 	Running bool
@@ -162,14 +165,19 @@ func (s *CoService) Run() {
 	}
 }
 
-func NewService(qsize, psize int) (s Service) {
+func (s *CoService) Stat() {
+	stat := s.coPool.Stat()
+	log.Println(stat)
+}
+
+func NewService(qsize, psize, coThreshold int) (s Service) {
 	if psize > 0 {
 		s = &CoService{
 			BaseService: BaseService{
 				queue: make(chan *QueueMsg, qsize),
 				quit:  make(chan struct{}),
 			},
-			coPool: NewPool(psize),
+			coPool: NewPool(psize, coThreshold),
 		}
 	} else {
 		s = &GoService{

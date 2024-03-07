@@ -4,23 +4,28 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 type CoState uint32
 
 const (
-	Suspended CoState = iota // yield or not start
+	Idle CoState = iota
 	Running
-	Dead // finished or stopped with an error
+	Suspended // yield
+	Dead      // finished or stopped with an error
 )
 
 func (s CoState) String() string {
 	switch s {
-	case Suspended:
-		return "Suspended"
+	case Idle:
+		return "Idle"
 	case Running:
 		return "Running"
+	case Suspended:
+		return "Suspended"
 	case Dead:
 		return "Dead"
 	default:
@@ -29,10 +34,11 @@ func (s CoState) String() string {
 }
 
 type Coroutine struct {
-	pool   *CoPool
-	waitIn chan func()
-	runner func()
-	state  CoState
+	pool             *CoPool
+	waitIn           chan func()
+	runner           func()
+	state            CoState
+	completedTaskNum int
 }
 
 // 1. 默认参数nil，唤醒co.runner中上次挂起的f
@@ -45,7 +51,7 @@ func (co *Coroutine) run(f func()) error {
 	if co.state == Dead {
 		return errors.New("cannot resume dead coroutine")
 	}
-	if co.state != Suspended {
+	if co.state != Idle && co.state != Suspended {
 		return fmt.Errorf("resume not suspended coroutine %s", co.state)
 	}
 	co.state = Running
@@ -59,10 +65,14 @@ func (co *Coroutine) run(f func()) error {
 					}
 				}
 				co.state = Dead
+				atomic.AddInt64(&co.pool.stat.alive, -1)
 			}()
 
+			atomic.AddInt64(&co.pool.stat.total, 1)
+			atomic.AddInt64(&co.pool.stat.alive, 1)
 			f()
-			co.state = Suspended
+			co.state = Idle
+			co.completedTaskNum++
 			co.pool.notifyOut <- nil
 			for {
 				f = nil
@@ -71,7 +81,8 @@ func (co *Coroutine) run(f func()) error {
 				}
 				f = <-co.waitIn
 				f()
-				co.state = Suspended
+				co.state = Idle
+				co.completedTaskNum++
 				co.pool.notifyOut <- nil
 			}
 		}
@@ -100,13 +111,20 @@ func (co *Coroutine) Yield(f func()) {
 	<-co.waitIn
 }
 
+type CoStat struct {
+	total int64
+	alive int64
+}
+
 type CoPool struct {
-	stack     []*Coroutine
-	size      int
-	cap       int
-	mu        sync.RWMutex
-	notifyOut chan error
-	runCo     *Coroutine
+	stack            []*Coroutine
+	size             int
+	cap              int
+	mu               sync.RWMutex
+	notifyOut        chan error
+	runCo            *Coroutine
+	stat             *CoStat
+	coResetThreshold int
 }
 
 func (p *CoPool) get() (co *Coroutine) {
@@ -119,15 +137,19 @@ func (p *CoPool) get() (co *Coroutine) {
 		p.size--
 	} else {
 		co = &Coroutine{
-			pool:   p,
-			waitIn: make(chan func()),
-			state:  Suspended,
+			pool:             p,
+			waitIn:           make(chan func()),
+			state:            Idle,
+			completedTaskNum: 0,
 		}
 	}
 	return
 }
 
 func (p *CoPool) put(co *Coroutine) bool {
+	if co.completedTaskNum >= p.coResetThreshold {
+		return false
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.size >= p.cap {
@@ -147,12 +169,28 @@ func (p *CoPool) Run(f func()) error {
 	return co.run(f)
 }
 
-func NewPool(cap int) *CoPool {
+func (p *CoPool) Stat() string {
+	total := atomic.LoadInt64(&p.stat.total)
+	alive := atomic.LoadInt64(&p.stat.alive)
+	var dot strings.Builder
+	dot.WriteString("===Coroutines Stat:===\n")
+	dot.WriteString(fmt.Sprintf("Total Count: %d\n", total))
+	dot.WriteString(fmt.Sprintf("Alive Count: %d\n", alive))
+	dot.WriteString(fmt.Sprintf("Pool Cap: %d\n", p.cap))
+	dot.WriteString(fmt.Sprintf("InPool Count: %d\n", p.size))
+	return dot.String()
+}
+
+// [cap]协程池容量：每次Coroutine执行完f，若当前协程池协程数量 < cap，会放回协程池，否则自动释放
+// [coResetThreshold]每个Coroutine执行任务数量上限：参考: https://github.com/grpc/grpc-go/blob/master/server.go#L614
+func NewPool(cap, coResetThreshold int) *CoPool {
 	p := &CoPool{
-		cap:       cap,
-		stack:     make([]*Coroutine, cap),
-		size:      0,
-		notifyOut: make(chan error, 1),
+		cap:              cap,
+		stack:            make([]*Coroutine, cap),
+		size:             0,
+		notifyOut:        make(chan error, 1),
+		coResetThreshold: coResetThreshold,
+		stat:             &CoStat{},
 	}
 	return p
 }

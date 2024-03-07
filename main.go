@@ -8,9 +8,11 @@ import (
 
 func main() {
 	var poolSize int
+	var coResetThreshold int
 	flag.IntVar(&poolSize, "pool", 0, "pool size, default 0")
+	flag.IntVar(&coResetThreshold, "threshold", 1, "co reset threshold, default 1")
 	flag.Parse()
-	s := NewService(10, poolSize)
+	s := NewService(10, poolSize, coResetThreshold)
 	f1 := func() {
 		log.Println("begin run f1")
 		s.Await(func() {
@@ -66,5 +68,6 @@ func main() {
 
 	log.Printf("----enter service dispatch pool size:%d----\n", poolSize)
 	s.Run()
+	s.Stat()
 	log.Println("----quit service dispatch----")
 }
