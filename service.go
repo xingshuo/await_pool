@@ -177,7 +177,7 @@ func NewService(qsize, psize, coThreshold int) (s Service) {
 				queue: make(chan *QueueMsg, qsize),
 				quit:  make(chan struct{}),
 			},
-			coPool: NewPool(psize, coThreshold),
+			coPool: NewPool(psize, coThreshold, true),
 		}
 	} else {
 		s = &GoService{

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -48,13 +47,17 @@ func (co *Coroutine) run(f func()) error {
 	defer func() {
 		co.pool.runCo = nil
 	}()
-	if co.state == Dead {
-		return errors.New("cannot resume dead coroutine")
-	}
-	if co.state != Idle && co.state != Suspended {
-		return fmt.Errorf("resume not suspended coroutine %s", co.state)
+	if f != nil { // Run
+		if co.state != Idle {
+			return fmt.Errorf("run not idle coroutine %s", co.state)
+		}
+	} else { // Resume
+		if co.state != Suspended {
+			return fmt.Errorf("resume not suspended coroutine %s", co.state)
+		}
 	}
 	co.state = Running
+	pstat := co.pool.stat
 	if co.runner == nil {
 		co.runner = func() {
 			defer func() {
@@ -65,11 +68,15 @@ func (co *Coroutine) run(f func()) error {
 					}
 				}
 				co.state = Dead
-				atomic.AddInt64(&co.pool.stat.alive, -1)
+				if pstat != nil {
+					atomic.AddInt64(&pstat.alive, -1)
+				}
 			}()
 
-			atomic.AddInt64(&co.pool.stat.total, 1)
-			atomic.AddInt64(&co.pool.stat.alive, 1)
+			if pstat != nil {
+				atomic.AddInt64(&pstat.total, 1)
+				atomic.AddInt64(&pstat.alive, 1)
+			}
 			f()
 			co.state = Idle
 			co.completedTaskNum++
@@ -105,6 +112,11 @@ func (co *Coroutine) Yield(f func()) {
 	if co.state != Running {
 		panic("cannot yield Suspended coroutine")
 	}
+	pstat := co.pool.stat
+	if pstat != nil {
+		defer atomic.AddInt64(&pstat.suspend, -1)
+		atomic.AddInt64(&pstat.suspend, 1)
+	}
 	co.state = Suspended
 	co.pool.notifyOut <- nil
 	f()
@@ -112,8 +124,9 @@ func (co *Coroutine) Yield(f func()) {
 }
 
 type CoStat struct {
-	total int64
-	alive int64
+	total   int64
+	alive   int64
+	suspend int64
 }
 
 type CoPool struct {
@@ -170,27 +183,37 @@ func (p *CoPool) Run(f func()) error {
 }
 
 func (p *CoPool) Stat() string {
-	total := atomic.LoadInt64(&p.stat.total)
-	alive := atomic.LoadInt64(&p.stat.alive)
+	pstat := p.stat
+	if pstat == nil {
+		return ""
+	}
+	total := atomic.LoadInt64(&pstat.total)
+	alive := atomic.LoadInt64(&pstat.alive)
+	suspend := atomic.LoadInt64(&pstat.suspend)
 	var dot strings.Builder
 	dot.WriteString("===Coroutines Stat:===\n")
 	dot.WriteString(fmt.Sprintf("Total Count: %d\n", total))
 	dot.WriteString(fmt.Sprintf("Alive Count: %d\n", alive))
+	dot.WriteString(fmt.Sprintf("Suspend Count: %d\n", suspend))
 	dot.WriteString(fmt.Sprintf("Pool Cap: %d\n", p.cap))
+	// Notice: data race here
 	dot.WriteString(fmt.Sprintf("InPool Count: %d\n", p.size))
 	return dot.String()
 }
 
 // [cap]协程池容量：每次Coroutine执行完f，若当前协程池协程数量 < cap，会放回协程池，否则自动释放
 // [coResetThreshold]每个Coroutine执行任务数量上限：参考: https://github.com/grpc/grpc-go/blob/master/server.go#L614
-func NewPool(cap, coResetThreshold int) *CoPool {
+// [openStat]是否开启协程状态统计，默认关闭
+func NewPool(cap, coResetThreshold int, openStat ...bool) *CoPool {
 	p := &CoPool{
 		cap:              cap,
 		stack:            make([]*Coroutine, cap),
 		size:             0,
 		notifyOut:        make(chan error, 1),
 		coResetThreshold: coResetThreshold,
-		stat:             &CoStat{},
+	}
+	if len(openStat) > 0 && openStat[0] {
+		p.stat = &CoStat{}
 	}
 	return p
 }
