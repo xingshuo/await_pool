@@ -190,14 +190,17 @@ func (p *CoPool) Stat() string {
 	total := atomic.LoadInt64(&pstat.total)
 	alive := atomic.LoadInt64(&pstat.alive)
 	suspend := atomic.LoadInt64(&pstat.suspend)
+	p.mu.RLock()
+	idle := int64(p.size)
+	p.mu.RUnlock()
+	running := alive - idle - suspend
 	var dot strings.Builder
-	dot.WriteString("===Coroutines Stat:===\n")
+	dot.WriteString(fmt.Sprintf("===CoPool Stat, Cap[%d]:===\n", p.cap))
 	dot.WriteString(fmt.Sprintf("Total Count: %d\n", total))
 	dot.WriteString(fmt.Sprintf("Alive Count: %d\n", alive))
+	dot.WriteString(fmt.Sprintf("Running Count: %d\n", running))
 	dot.WriteString(fmt.Sprintf("Suspend Count: %d\n", suspend))
-	dot.WriteString(fmt.Sprintf("Pool Cap: %d\n", p.cap))
-	// Notice: data race here
-	dot.WriteString(fmt.Sprintf("InPool Count: %d\n", p.size))
+	dot.WriteString(fmt.Sprintf("Idle Count: %d\n", idle))
 	return dot.String()
 }
 
