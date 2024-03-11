@@ -6,13 +6,21 @@ import (
 	"time"
 )
 
+var (
+	poolSize         int
+	coResetThreshold int
+	queueSize        int
+	poolStat         bool
+)
+
 func main() {
-	var poolSize int
-	var coResetThreshold int
-	flag.IntVar(&poolSize, "pool", 0, "pool size, default 0")
-	flag.IntVar(&coResetThreshold, "threshold", 1, "co reset threshold, default 1")
+	flag.IntVar(&queueSize, "queue", 10, "queue size, default 10")
+	flag.IntVar(&poolSize, "pool", 3, "pool size, default 3")
+	flag.IntVar(&coResetThreshold, "threshold", 2, "co reset threshold, default 2")
+	flag.BoolVar(&poolStat, "stat", false, "open pool stat, default false")
 	flag.Parse()
-	s := NewService(10, poolSize, coResetThreshold)
+
+	s := NewService(queueSize, poolSize, coResetThreshold, poolStat)
 	f1 := func() {
 		log.Println("begin run f1")
 		s.Stat()

@@ -1,4 +1,4 @@
-package main
+package await_pool
 
 import (
 	"fmt"
@@ -206,8 +206,8 @@ func (p *CoPool) Stat() string {
 
 // [cap]协程池容量：每次Coroutine执行完f，若当前协程池协程数量 < cap，会放回协程池，否则自动释放
 // [coResetThreshold]每个Coroutine执行任务数量上限：参考: https://github.com/grpc/grpc-go/blob/master/server.go#L614
-// [openStat]是否开启协程状态统计，默认关闭
-func NewPool(cap, coResetThreshold int, openStat ...bool) *CoPool {
+// [openStat]是否开启协程状态统计
+func NewPool(cap, coResetThreshold int, openStat bool) *CoPool {
 	p := &CoPool{
 		cap:              cap,
 		stack:            make([]*Coroutine, cap),
@@ -215,7 +215,7 @@ func NewPool(cap, coResetThreshold int, openStat ...bool) *CoPool {
 		notifyOut:        make(chan error, 1),
 		coResetThreshold: coResetThreshold,
 	}
-	if len(openStat) > 0 && openStat[0] {
+	if openStat {
 		p.stat = &CoStat{}
 	}
 	return p
